@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>모의 주식 거래 시뮬레이터</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, sans-serif; margin: 0; background: #f4f5f7; color: #222; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 20px; margin: 8px 0 16px; }
+  .card { background: #fff; border-radius: 10px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+  .grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 12px; }
+  .stat { text-align: center; }
+  .stat .label { font-size: 12px; color: #888; }
+  .stat .value { font-size: 18px; font-weight: 700; margin-top: 4px; }
+  .up { color: #d32f2f; } .down { color: #1565c0; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 7px 6px; text-align: right; border-bottom: 1px solid #eee; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: #888; font-weight: 600; }
+  .hist { color: #aaa; font-size: 11px; text-align: left; }
+  select, input, button { padding: 8px; border-radius: 6px; border: 1px solid #ccc; font-size: 14px; }
+  button { cursor: pointer; border: none; color: #fff; font-weight: 600; }
+  .btn-buy { background: #d32f2f; } .btn-sell { background: #1565c0; }
+  .btn-sub { background: #777; font-size: 12px; padding: 6px 10px; }
+  .btn-max { background: #555; padding: 8px 10px; }
+  .order-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .qtybox { display: flex; align-items: center; gap: 4px; }
+  .qtybox button { background: #888; width: 32px; }
+  #msg { color: #d32f2f; font-size: 13px; min-height: 18px; margin-top: 8px; }
+
+  /* ★수정 1: grid 부모 */
+  .charts {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  /* ★수정 2: grid 아이템(차트 컬럼)에 min-width:0 강제
+     -> 캔버스가 커져도 grid 셀이 그 크기에 갇히지 않고 자유롭게 축소/확대됨 (핵심) */
+  .charts > div {
+    min-width: 0;
+  }
+
+  .ev { background: #fff8e1; border-left: 4px solid #f9a825; padding: 10px 14px; border-radius: 6px; font-size: 13px; margin-bottom: 12px; display: none; }
+  @media (max-width: 760px) { .grid { grid-template-columns: repeat(2,1fr); } .charts { grid-template-columns: 1fr; } }
+
+  /* ★수정 3: 차트를 감쌀 고정 높이 박스
+     - overflow:hidden 제거 (선을 자르는 게 아니라 캔버스 크기 자체를 맞춰야 정상)
+     - min-width:0 추가 */
+  .chart-box {
+    position: relative;
+    height: 320px;       /* 데스크톱 높이 */
+    width: 100%;
+    min-width: 0;        /* ★수정 */
+  }
+  /* ★수정 4: canvas가 부모 크기를 넘지 않도록 명시 */
+  .chart-box canvas {
+    display: block;
+    max-width: 100%;
+  }
+  @media (max-width: 760px) {
+    .chart-box { height: 240px; }  /* 모바일에선 더 낮게 */
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>📈 모의 주식 거래 시뮬레이터</h1>
+
+  <div id="eventBox" class="ev"></div>
+
+  <div class="card grid">
+    <div class="stat"><div class="label">예수금</div><div class="value" id="cash">-</div></div>
+    <div class="stat"><div class="label">주식평가액</div><div class="value" id="stockVal">-</div></div>
+    <div class="stat"><div class="label">총자산</div><div class="value" id="totalAsset">-</div></div>
+    <div class="stat"><div class="label">총수익률</div><div class="value" id="returnRate">-</div></div>
+  </div>
+
+  <div class="card">
+    <div class="charts">
+      <div>
+        <div style="font-size:13px;color:#888;margin-bottom:6px;">종목별 주가 추이</div>
+        <div class="chart-box"><canvas id="priceChart"></canvas></div>
+      </div>
+      <div>
+        <div style="font-size:13px;color:#888;margin-bottom:6px;">내 누적 수익률(%)</div>
+        <div class="chart-box"><canvas id="returnChart"></canvas></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div style="font-weight:700;margin-bottom:10px;">종목 현황</div>
+    <table>
+      <thead><tr><th>종목</th><th>현재가</th><th>등락률</th><th>최근 흐름</th></tr></thead>
+      <tbody id="marketBody"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div style="font-weight:700;margin-bottom:10px;">주문</div>
+    <div class="order-row">
+      <select id="orderSymbol"></select>
+      <div class="qtybox">
+        <button onclick="changeQty(-1)">−</button>
+        <input id="orderQty" type="number" value="1" min="1" style="width:70px;text-align:center;">
+        <button onclick="changeQty(1)">+</button>
+      </div>
+      <button class="btn-buy" onclick="buy()">매수</button>
+      <button class="btn-sell" onclick="sell()">매도</button>
+      <button class="btn-max" onclick="buyMax()">최대매수</button>
+      <button class="btn-max" onclick="sellMax()">전량매도</button>
+    </div>
+    <div id="msg"></div>
+  </div>
+
+  <div class="card">
+    <div style="font-weight:700;margin-bottom:10px;">내 포트폴리오</div>
+    <table>
+      <thead><tr><th>종목</th><th>수량</th><th>평단가</th><th>평가손익</th><th>수익률</th></tr></thead>
+      <tbody id="portfolioBody"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div style="font-weight:700;margin-bottom:10px;">체결 내역 (최근 10건)</div>
+    <table>
+      <thead><tr><th>종목</th><th>구분</th><th>수량</th><th>체결가</th><th>시각</th></tr></thead>
+      <tbody id="tradeBody"></tbody>
+    </table>
+  </div>
+
+  <div class="card" style="display:flex;gap:10px;">
+    <button class="btn-sub" onclick="resetAccount()">계좌만 초기화</button>
+    <button class="btn-sub" onclick="resetAll()">전체 초기화</button>
+  </div>
+</div>
+
+<script>
+// ===== 상수 =====
+const INITIAL_CASH = 10000000;
+const BASE_STOCKS = [
+  { name: '가나전자', price: 50000 },
+  { name: '다라바이오', price: 80000 },
+  { name: '마바식품', price: 30000 },
+  { name: '사아에너지', price: 120000 },
+];
+const STORAGE_KEY = 'stockSimV2';
+const MAX_POINTS = 30; // 차트 최대 데이터 포인트
+
+// ===== 유틸 =====
+function fmt(n) { return Math.round(n).toLocaleString('ko-KR') + '원'; }
+function now() {
+  const d = new Date();
+  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`;
+}
+
+// ===== 상태 =====
+function defaultState() {
+  const prices = {}, prevPrices = {}, priceHistory = {};
+  BASE_STOCKS.forEach(s => {
+    prices[s.name] = s.price;
+    prevPrices[s.name] = s.price;
+    priceHistory[s.name] = [s.price];
+  });
+  return {
+    cash: INITIAL_CASH,
+    holdings: {},
+    trades: [],
+    prices, prevPrices, priceHistory,
+    returnHistory: [0], // 누적 수익률(%) 시계열
+  };
+}
+
+let state = defaultState();
+
+function load() {
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if (raw) {
+    try { state = JSON.parse(raw); } catch(e) { state = defaultState(); }
+  }
+}
+function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+
+// ===== 자산 계산 =====
+function stockValue() {
+  let v = 0;
+  for (const name in state.holdings) v += state.prices[name] * state.holdings[name].qty;
+  return v;
+}
+function totalAsset() { return state.cash + stockValue(); }
+function returnRate() { return (totalAsset() - INITIAL_CASH) / INITIAL_CASH * 100; }
+
+// ===== 가격 변경 일원화 =====
+function setPrice(name, newPrice) {
+  newPrice = Math.max(1000, Math.round(newPrice)); // 최저가 바닥
+  state.prevPrices[name] = state.prices[name];
+  state.prices[name] = newPrice;
+  const h = state.priceHistory[name];
+  h.push(newPrice);
+  if (h.length > MAX_POINTS) h.shift();
+}
+
+// ===== 시세 갱신 (3초 주기) =====
+function updatePrices() {
+  BASE_STOCKS.forEach(s => {
+    const cur = state.prices[s.name];
+    const rate = (Math.random() * 10 - 5) / 100; // ±5%
+    setPrice(s.name, cur * (1 + rate));
+  });
+
+  maybeEarningsSurprise(); // 어닝 서프라이즈(가격 즉시 반영)
+
+  state.returnHistory.push(Number(returnRate().toFixed(2)));
+  if (state.returnHistory.length > MAX_POINTS) state.returnHistory.shift();
+
+  save();
+  render();
+  updateCharts();
+}
+// ===== 어닝 서프라이즈 =====
+function maybeEarningsSurprise() {
+  if (Math.random() > 0.08) { hideEvent(); return; }
+  const s = BASE_STOCKS[Math.floor(Math.random() * BASE_STOCKS.length)];
+  const up = Math.random() < 0.5;
+  const mag = 0.15 + Math.random() * 0.10; // 15~25%
+  const cur = state.prices[s.name];
+  setPrice(s.name, cur * (1 + (up ? mag : -mag)));
+
+  showEvent(`🚨 어닝 서프라이즈! [${s.name}] ${up ? '급등 📈' : '급락 📉'} ` +
+            `${(up?'+':'-') + (mag*100).toFixed(1)}% → ${fmt(state.prices[s.name])}`);
+}
+function showEvent(text) {
+  const box = document.getElementById('eventBox');
+  box.textContent = text;
+  box.style.display = 'block';
+}
+function hideEvent() {
+  document.getElementById('eventBox').style.display = 'none';
+}
+
+// ===== 거래 =====
+function buy() {
+  const name = document.getElementById('orderSymbol').value;
+  const qty = parseInt(document.getElementById('orderQty').value, 10);
+  if (!qty || qty < 1) return msg('수량을 1 이상 입력하세요.');
+  const price = state.prices[name];
+  const cost = price * qty;
+  if (cost > state.cash) return msg('예수금이 부족합니다. (필요: ' + fmt(cost) + ')');
+
+  state.cash -= cost;
+  const h = state.holdings[name];
+  if (h) {
+    const totalCost = h.avg * h.qty + cost;
+    h.qty += qty;
+    h.avg = totalCost / h.qty;
+  } else {
+    state.holdings[name] = { qty: qty, avg: price };
+  }
+  addTrade(name, '매수', qty, price);
+  msg('');
+  save(); render();
+}
+
+function sell() {
+  const name = document.getElementById('orderSymbol').value;
+  const qty = parseInt(document.getElementById('orderQty').value, 10);
+  if (!qty || qty < 1) return msg('수량을 1 이상 입력하세요.');
+  const h = state.holdings[name];
+  if (!h || h.qty < qty) return msg('보유 수량이 부족합니다.');
+  const price = state.prices[name];
+
+  state.cash += price * qty;
+  h.qty -= qty;
+  if (h.qty === 0) delete state.holdings[name];
+  addTrade(name, '매도', qty, price);
+  msg('');
+  save(); render();
+}
+
+function buyMax() {
+  const name = document.getElementById('orderSymbol').value;
+  const maxQty = Math.floor(state.cash / state.prices[name]);
+  if (maxQty < 1) return msg('매수 가능 수량이 없습니다.');
+  document.getElementById('orderQty').value = maxQty;
+  buy();
+}
+
+function sellMax() {
+  const name = document.getElementById('orderSymbol').value;
+  const h = state.holdings[name];
+  if (!h || h.qty < 1) return msg('보유 수량이 없습니다.');
+  document.getElementById('orderQty').value = h.qty;
+  sell();
+}
+
+function addTrade(name, type, qty, price) {
+  state.trades.unshift({ name, type, qty, price, time: now() });
+  if (state.trades.length > 10) state.trades.pop();
+}
+
+function changeQty(d) {
+  const el = document.getElementById('orderQty');
+  el.value = Math.max(1, (parseInt(el.value,10)||1) + d);
+}
+function msg(t) { document.getElementById('msg').textContent = t; }
+
+// ===== 렌더링 =====
+function render() {
+  document.getElementById('cash').textContent = fmt(state.cash);
+  document.getElementById('stockVal').textContent = fmt(stockValue());
+  document.getElementById('totalAsset').textContent = fmt(totalAsset());
+  const rr = returnRate();
+  const rrEl = document.getElementById('returnRate');
+  rrEl.textContent = (rr>=0?'+':'') + rr.toFixed(2) + '%';
+  rrEl.className = 'value ' + (rr>=0?'up':'down');
+
+  const mb = document.getElementById('marketBody');
+  mb.innerHTML = '';
+  BASE_STOCKS.forEach(s => {
+    const name = s.name;
+    const cur = state.prices[name];
+    const prev = state.prevPrices[name];
+    const chg = (cur - prev) / prev * 100;
+    const cls = chg>=0?'up':'down';
+    const spark = state.priceHistory[name].slice(-8).map(p=>Math.round(p)).join(' · ');
+    mb.innerHTML += `<tr>
+      <td>${name}</td>
+      <td>${fmt(cur)}</td>
+      <td class="${cls}">${(chg>=0?'+':'')}${chg.toFixed(2)}%</td>
+      <td class="hist">${spark}</td>
+    </tr>`;
+  });
+
+  const pb = document.getElementById('portfolioBody');
+  pb.innerHTML = '';
+  const names = Object.keys(state.holdings);
+  if (names.length === 0) {
+    pb.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#aaa;">보유 종목 없음</td></tr>';
+  } else {
+    names.forEach(name => {
+      const h = state.holdings[name];
+      const cur = state.prices[name];
+      const profit = (cur - h.avg) * h.qty;
+      const rate = (cur - h.avg) / h.avg * 100;
+      const cls = profit>=0?'up':'down';
+      pb.innerHTML += `<tr>
+        <td>${name}</td>
+        <td>${h.qty}</td>
+        <td>${fmt(h.avg)}</td>
+        <td class="${cls}">${(profit>=0?'+':'')}${fmt(profit)}</td>
+        <td class="${cls}">${(rate>=0?'+':'')}${rate.toFixed(2)}%</td>
+      </tr>`;
+    });
+  }
+
+  const tb = document.getElementById('tradeBody');
+  tb.innerHTML = '';
+  if (state.trades.length === 0) {
+    tb.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#aaa;">체결 내역 없음</td></tr>';
+  } else {
+    state.trades.forEach(t => {
+      tb.innerHTML += `<tr>
+        <td>${t.name}</td>
+        <td class="${t.type==='매수'?'up':'down'}">${t.type}</td>
+        <td>${t.qty}</td>
+        <td>${fmt(t.price)}</td>
+        <td>${t.time}</td>
+      </tr>`;
+    });
+  }
+}
+
+// ===== 차트 =====
+let priceChart, returnChart;
+const COLORS = ['#d32f2f', '#1565c0', '#2e7d32', '#f9a825'];
+
+function initCharts() {
+  const priceCtx = document.getElementById('priceChart').getContext('2d');
+  priceChart = new Chart(priceCtx, {
+    type: 'line',
+    data: {
+      labels: state.priceHistory[BASE_STOCKS[0].name].map((_, i) => i + 1),
+      datasets: BASE_STOCKS.map((s, idx) => ({
+        label: s.name,
+        data: state.priceHistory[s.name].slice(),
+        borderColor: COLORS[idx],
+        backgroundColor: 'transparent',
+        borderWidth: 2,
+        tension: 0.3,
+        pointRadius: 0,
+      })),
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      plugins: { legend: { labels: { boxWidth: 12, font: { size: 11 } } } },
+      scales: { y: { ticks: { font: { size: 10 } } }, x: { display: false } },
+    },
+  });
+
+  const returnCtx = document.getElementById('returnChart').getContext('2d');
+  returnChart = new Chart(returnCtx, {
+    type: 'line',
+    data: {
+      labels: state.returnHistory.map((_, i) => i + 1),
+      datasets: [{
+        label: '누적 수익률(%)',
+        data: state.returnHistory.slice(),
+        borderColor: '#6a1b9a',
+        backgroundColor: 'rgba(106,27,154,0.1)',
+        borderWidth: 2,
+        fill: true,
+        tension: 0.3,
+        pointRadius: 0,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      plugins: { legend: { display: false } },
+      scales: { y: { ticks: { font: { size: 10 } } }, x: { display: false } },
+    },
+  });
+}
+
+function updateCharts() {
+  priceChart.data.labels = state.priceHistory[BASE_STOCKS[0].name].map((_, i) => i + 1);
+  BASE_STOCKS.forEach((s, idx) => {
+    priceChart.data.datasets[idx].data = state.priceHistory[s.name].slice();
+  });
+  priceChart.update('none');
+
+  returnChart.data.labels = state.returnHistory.map((_, i) => i + 1);
+  returnChart.data.datasets[0].data = state.returnHistory.slice();
+  returnChart.update('none');
+}
+
+// ===== 초기화 버튼 =====
+function resetAccount() {
+  if (!confirm('예수금·보유종목·체결내역·수익률 기록을 초기화할까요? (시세는 유지)')) return;
+  state.cash = INITIAL_CASH;
+  state.holdings = {};
+  state.trades = [];
+  state.returnHistory = [0];
+  save();
+  render();
+  updateCharts();
+  msg('계좌가 초기화되었습니다.');
+}
+
+function resetAll() {
+  if (!confirm('모든 데이터를 처음 상태로 되돌릴까요?')) return;
+  localStorage.removeItem(STORAGE_KEY);
+  state = defaultState();
+  save();
+  priceChart.destroy();
+  returnChart.destroy();
+  initCharts();
+  initOrderSelect();
+  render();
+  msg('전체 초기화 완료.');
+}
+
+// ===== 주문 셀렉트 박스 =====
+function initOrderSelect() {
+  const sel = document.getElementById('orderSymbol');
+  sel.innerHTML = '';
+  BASE_STOCKS.forEach(s => {
+    const opt = document.createElement('option');
+    opt.value = s.name;
+    opt.textContent = s.name;
+    sel.appendChild(opt);
+  });
+}
+
+// ===== 시작 =====
+load();
+initOrderSelect();
+initCharts();
+render();
+
+setInterval(updatePrices, 3000);
+
+// ★수정 5: 창 크기 변경 시 차트 리사이즈 (resize()로 캔버스를 컨테이너에 재동기화)
+let resizeTimer;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    if (priceChart) priceChart.resize();
+    if (returnChart) returnChart.resize();
+  }, 150);
+});
+</script>
+</body>
+</html>
